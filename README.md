@@ -25,6 +25,10 @@ You need `bash`, `jq`, `python3` (3.8 or newer) and `git`, on macOS or Linux.
 - Costs are API-equivalent estimates: what the usage would cost at API prices. On a subscription, use them for scale, not as a bill. They count only Claude Code sessions on this machine.
 - [INSTALL.md](INSTALL.md) explains each line, the options and how to uninstall.
 
+## Credits
+
+Based on the original status line by [@FoCDoT](https://github.com/FoCDoT), then extended and optimized here, with the SwiftBar menu added.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). An unofficial community project, not made by or affiliated with Anthropic.
