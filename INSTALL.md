@@ -17,7 +17,7 @@ lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · 
   - Lines added and removed this session.
   - Tokens in and out, and each origin's share of them (main chat, subagents, workflows).
   - Session `age` (time since it started, idle time included) and how long the model `ran`.
-  - The API-equivalent cost and the burn rate per hour of model time. The burn colour is green under $25/hr, yellow from $25 to $50/hr and red from $50/hr. To change the bands, edit the `bcls=` line in `statusline-command.sh`.
+  - The API-equivalent cost and the burn rate per hour of model time. The burn colour is plain text under $20/hr, then green up to $60, yellow up to $140, orange up to $300 and red above that. Orange uses the 256-colour palette, which modern terminals support. To change the bands, edit the `bcls=` line in `statusline-command.sh`.
 - Line 4 appears only when the current pace will hit the 5-hour or 7-day limit before it resets.
 
 Costs are API-equivalent estimates, meaning what the usage would cost at API prices. On a subscription they're for scale, not a bill. The 5-hour and 7-day limits need a claude.ai subscription login. With an API key, line 4 stays empty.

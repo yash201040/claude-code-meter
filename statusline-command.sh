@@ -4,7 +4,7 @@
 # Line 1: cwd, git branch (* dirty, +staged ~unstaged ?untracked ↑ahead ↓behind ✗conflicts), PR badge
 # Line 2: [model · window] ⚡effort🧠  context tokens + bar + %  session name  [permission mode]
 # Line 3: lines +a/-r │ in · out · main/agents/wf share │ age · ran (model time) │ cost 🔥$/hr of model time
-#         (burn colour: green under $25/hr, yellow $25–50/hr, red from $50/hr)
+#         (burn colour: plain under $20/hr, green to $60, yellow to $140, orange to $300, red above)
 # Line 4 (only when a window will cap before it resets): 5h/7d ▲pace× caps ~eta │ this session's share
 #
 # All values come from the JSON Claude Code pipes in on stdin (see
@@ -22,6 +22,7 @@ ESC=$'\033'; BEL=$'\007'
 C_RESET="${ESC}[0m"; C_BOLD="${ESC}[1m"
 C_RED="${ESC}[31m"; C_GREEN="${ESC}[32m"; C_YELLOW="${ESC}[33m"
 C_BLUE="${ESC}[34m"; C_MAGENTA="${ESC}[35m"; C_CYAN="${ESC}[36m"; C_GREY="${ESC}[90m"
+C_ORANGE="${ESC}[38;5;208m"  # 256-colour palette; the basic 8 have no orange
 SEP="${C_GREY}│${C_RESET}"
 
 now=$(date +%s)
@@ -332,9 +333,11 @@ if [[ "$cost" =~ ^[0-9.]+$ ]]; then
   if [[ "$api_ms" =~ ^[0-9]+$ ]] && [ "$api_ms" -gt 0 ]; then
     burn=$(awk -v c="$cost" -v d="$api_ms" 'BEGIN{ if (d>0) printf "%.2f", c*3600000/d }')
     if [ -n "$burn" ]; then
-      # Fixed bands: green under $25/hr, yellow $25–50/hr, red from $50/hr.
-      bcls=$(awk -v b="$burn" 'BEGIN{print (b>=50 ? 2 : (b>=25 ? 1 : 0))}')
-      case "$bcls" in 2) bcol="$C_RED" ;; 1) bcol="$C_YELLOW" ;; *) bcol="$C_GREEN" ;; esac
+      # Bands widen as they rise: plain text under $20/hr, green to $60, yellow to
+      # $140, orange to $300, red from $300. Plain (not white) stays readable on
+      # light themes.
+      bcls=$(awk -v b="$burn" 'BEGIN{print (b>=300 ? 4 : b>=140 ? 3 : b>=60 ? 2 : b>=20 ? 1 : 0)}')
+      case "$bcls" in 4) bcol="$C_RED" ;; 3) bcol="$C_ORANGE" ;; 2) bcol="$C_YELLOW" ;; 1) bcol="$C_GREEN" ;; *) bcol="" ;; esac
       cost_seg="${cost_seg} ${bcol}🔥\$${burn}/hr${C_RESET}"
     fi
   fi
