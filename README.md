@@ -1,6 +1,6 @@
 # claude-code-meter
 
-A status line for [Claude Code](https://code.claude.com) that shows git state, context use, session tokens, cost and burn rate, and a warning when a 5-hour or 7-day limit is about to run out. There's also an optional macOS menu-bar view through [SwiftBar](https://swiftbar.app). It's built for Claude Code in [Herdr](https://github.com/herdrdev/herdr) inside [Ghostty](https://ghostty.org), and it works in [Supacode](https://supacode.sh) too.
+A status line for [Claude Code](https://code.claude.com) that shows git state, context use, session tokens, cost and burn rate, and a warning when a 5-hour or 7-day limit is about to run out. There's also an optional macOS menu-bar view through [SwiftBar](https://swiftbar.app).
 
 ```
 ~/code/my-project  main* +2 ~1 ?3 ↑1  PR#12 ✓
