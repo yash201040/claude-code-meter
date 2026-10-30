@@ -47,9 +47,10 @@ Costs are API-equivalent estimates, meaning what the usage would cost at API pri
 - `CC_BILLING_DAY`: the day the billing month starts (default 1).
 - Account-wide views. Both are optional and read only the cache the status line keeps fresh, so they cost nothing extra:
   - **Menu bar (SwiftBar, macOS):** `swiftbar/cc-usage.1m.py` shows `5h 3% · 7d 3%` in the menu bar, turning amber or red when a limit is close or will be hit before it resets. Its drop-down shows the reset times and the API-equivalent spend for the 5-hour window, the 7-day window and the billing month, the month's cost as a multiple of the plan price, the prompt-cache hit rate, the model mix and the month's token totals. It reruns every minute and shows how old its data is. With no Claude Code session open, the numbers stop updating, which is fine because usage isn't changing.
-  - **Terminal panel:** `bash ~/.claude/statusline-global.sh [secs]` shows the same numbers in a spare terminal tab.
+  - **Terminal panel:** `bash ~/.claude/statusline-global.sh [secs]` shows the same numbers in a spare terminal tab or Herdr pane.
 - All costs count only Claude Code sessions on this machine. claude.ai, the Claude apps and other devices use the same limits but don't show up in the dollar figures.
-- The script also sets the terminal tab title to the session's folder. Delete the last block of `statusline-command.sh` to turn that off.
+- The script also sets the terminal tab title to the session's folder. Delete the last block of `statusline-command.sh` to turn that off. In Herdr this does nothing, because Claude Code runs the status line without a terminal attached, so Herdr's sidebar keeps Claude's own session title.
+- In Herdr, open the PR badge with Ctrl-click rather than Command-click, unless `mouse_capture = false` is set in `~/.config/herdr/config.toml`.
 
 ## Files and data
 

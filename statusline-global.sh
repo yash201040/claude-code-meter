@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Account-wide Claude Code usage panel: 5h / 7d limit gauges and the API≈ line,
-# shown once (e.g. in a Supacode tab) instead of in every session's status line.
+# shown once (e.g. in a Herdr pane) instead of in every session's status line.
 #
 #   statusline-global.sh [interval_secs]    # default 30; Ctrl-C to quit
 #
