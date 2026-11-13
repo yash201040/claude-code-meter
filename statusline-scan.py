@@ -5,10 +5,12 @@ last one.
 
   statusline-scan.py <session_id> <transcript_path> <s5> <s7>
 
-prints three lines:
+prints four lines:
   1. m_in m_out s_in s_out w_in w_out s_add s_rem w_add w_rem   (this session)
   2. the API-equivalent cost line (ANSI-colored, empty when nothing to show)
   3. this session's share of the 5h/7d windows (ANSI-colored, may be empty)
+  4. the account burn rate: API-equivalent $ of every session in the last hour
+     (a plain number, empty until the shared scan has a 1h window)
 
 Session totals: transcripts are append-only, so each file's byte offset is kept
 and only bytes appended since are parsed. Cache: ~/.cache/cc-statusline/.
@@ -309,11 +311,14 @@ def refresh(s5, s7):
             del cache[path]
     save(FILES_CACHE, cache)
 
-    w = {k: {"in": 0, "out": 0, "cost": 0.0, "cr": 0} for k in ("5h", "7d", "mo")}
+    # "1h" is a rolling last hour across every session: its cost is the account's
+    # current burn rate in $/hr of wall-clock time.
+    s1 = int(time.time()) - 3600
+    w = {k: {"in": 0, "out": 0, "cost": 0.0, "cr": 0} for k in ("1h", "5h", "7d", "mo")}
     tiers, sess5, sess7 = {}, {}, {}
     for en in dedup([en for rec in cache.values() for en in rec["e"]], 8):
         t, c = en[1], cost(en)
-        for k, start in (("5h", s5), ("7d", s7), ("mo", sm)):
+        for k, start in (("1h", s1), ("5h", s5), ("7d", s7), ("mo", sm)):
             if t >= start:
                 w[k]["in"] += en[4] + en[5] + en[7]; w[k]["out"] += en[8]
                 w[k]["cost"] += c; w[k]["cr"] += en[7]
@@ -413,7 +418,11 @@ def main():
         line, share = api_lines(sid, res)
     except Exception:
         line, share = "", ""
-    sys.stdout.write(" ".join(map(str, tot)) + "\n" + line + "\n" + share + "\n")
+    try:
+        acct = "%.2f" % res["w"]["1h"]["cost"]
+    except Exception:
+        acct = ""  # a result saved before the 1h window existed: shown after the next refresh
+    sys.stdout.write(" ".join(map(str, tot)) + "\n" + line + "\n" + share + "\n" + acct + "\n")
 
 
 if __name__ == "__main__":

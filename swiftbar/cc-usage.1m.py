@@ -76,6 +76,33 @@ def item(text, params=""):
     print(text + (" | " + params if params else ""))
 
 
+def account():
+    """The Claude account Claude Code is signed in to, from its own config (no network)."""
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = os.path.join(cfg, ".claude.json") if cfg else os.path.expanduser("~/.claude.json")
+    try:
+        with open(path) as f:
+            a = json.load(f).get("oauthAccount") or {}
+    except Exception:
+        return None
+    name = a.get("displayName") or a.get("fullName") or a.get("emailAddress")
+    if not name:
+        return None
+    return name, a.get("emailAddress") or "", a.get("planDisplayName") or ""
+
+
+def account_rows():
+    acc = account()
+    if not acc:
+        return ["Not signed in to Claude | " + HEAD]
+    name, email, plan = acc
+    clean_ = lambda t: t.replace("|", "/")
+    rows = ["Signed in as %s%s | sfimage=person.crop.circle" % (clean_(name), " · " + clean_(plan) if plan else "")]
+    if email and email != name:
+        rows.append("--%s | %s" % (clean_(email), HEAD))
+    return rows
+
+
 lim = load("limits.json") or {}
 res = load("api-result.json")
 
@@ -120,6 +147,9 @@ except OSError:
     icon = "sfimage=asterisk" + {1: " sfcolor=" + AMBER, 2: " sfcolor=" + RED}.get(level, "")
 color = {1: " color=" + AMBER, 2: " color=" + RED}.get(level, "")
 print((" · ".join(title) or "Claude –") + " | " + icon + color)
+print("---")
+for line in account_rows():
+    print(line)
 print("---")
 item("Usage limits", HEAD)
 if rows:

@@ -4,8 +4,9 @@
 # Line 1: cwd, git branch (* dirty, +staged ~unstaged ?untracked ↑ahead ↓behind ✗conflicts), PR badge
 # Line 2: [model · window] ⚡effort🧠  context tokens + bar + %  session name  [permission mode]
 # Line 3: lines +a/-r │ in · out · main/agents/wf share │ age · ran (model time) │ cost 🔥$/hr of model time
-#         (burn colour: plain under $20/hr, green to $60, yellow to $140, orange to $300, red above)
-# Line 4 (only when a window will cap before it resets): 5h/7d ▲pace× caps ~eta │ this session's share
+#         · acct 🔥$/hr (every session's API-equivalent spend in the last hour)
+#         (burn colour, both rates: plain under $20/hr, green to $60, yellow to $140, orange to $300, red above)
+# The 5h/7d limits live in the SwiftBar menu (cc-usage), not here.
 #
 # All values come from the JSON Claude Code pipes in on stdin (see
 # https://code.claude.com/docs/en/statusline), plus transcript totals from
@@ -64,13 +65,36 @@ IFS=$'\037' read -r model raw_cwd session_name session_id used window_size used_
 
 short_cwd="${raw_cwd/#$HOME/~}"
 
-# Publish the account-wide 5h/7d limits for statusline-global.sh (the shared
-# usage panel): whichever session rendered last has the freshest numbers.
+# Publish the account-wide 5h/7d limits for statusline-global.sh and the menu-bar
+# usage plugin. Each session only knows the numbers from its own last API reply, so
+# an idle session that re-renders would write an old, lower figure. Usage never
+# drops within one window, so for the same reset time keep the higher figure, and
+# take a new window's figure as soon as any session reports it.
 if [[ "$five_pct" =~ ^[0-9.]+$ ]] || [[ "$seven_pct" =~ ^[0-9.]+$ ]]; then
   mkdir -p "$HOME/.cache/cc-statusline"
   lim="$HOME/.cache/cc-statusline/limits.json"
-  printf '{"at":%s,"five_pct":"%s","five_reset":"%s","seven_pct":"%s","seven_reset":"%s"}\n' \
-    "$now" "$five_pct" "$five_reset" "$seven_pct" "$seven_reset" > "$lim.$$" && mv -f "$lim.$$" "$lim"
+  merged=$(jq -cn --argjson now "$now" --arg fp "$five_pct" --arg fr "$five_reset" \
+      --arg sp "$seven_pct" --arg sr "$seven_reset" --slurpfile old <(cat "$lim" 2>/dev/null || true) '
+    ($old[0] // {}) as $o
+    | def pick($p; $r; $op; $or):
+        if ($p | test("^[0-9.]+$") | not) then [$op, $or]
+        elif ($or | tostring | test("^[0-9]+$") | not) or ($op | tostring | test("^[0-9.]+$") | not) then [$p, $r]
+        elif ($r | tonumber) > ($or | tonumber) + 60 then [$p, $r]
+        elif ($r | tonumber) < ($or | tonumber) - 60 then
+          (if ($or | tonumber) <= $now then [$p, $r] else [$op, $or] end)
+        elif ($p | tonumber) >= ($op | tonumber) then [$p, $r]
+        else [$op, $or] end;
+      pick($fp; $fr; ($o.five_pct // ""); ($o.five_reset // "")) as [$f, $fr2]
+    | pick($sp; $sr; ($o.seven_pct // ""); ($o.seven_reset // "")) as [$s, $sr2]
+    | {at: $now, five_pct: ($f|tostring), five_reset: ($fr2|tostring), seven_pct: ($s|tostring), seven_reset: ($sr2|tostring)}' 2>/dev/null)
+  [[ -n "$merged" ]] || merged=$(printf '{"at":%s,"five_pct":"%s","five_reset":"%s","seven_pct":"%s","seven_reset":"%s"}' \
+    "$now" "$five_pct" "$five_reset" "$seven_pct" "$seven_reset")
+  printf '%s\n' "$merged" > "$lim.$$" && mv -f "$lim.$$" "$lim"
+  # Note each stale figure that was turned away, so a disagreement can be traced.
+  kept=$(jq -r .seven_pct <<< "$merged" 2>/dev/null)
+  [[ "$seven_pct" =~ ^[0-9.]+$ && "$kept" != "$seven_pct" ]] && \
+    printf '%s session %s reported 7d=%s, kept %s\n' "$(date '+%F %T')" "$session_id" "$seven_pct" "$kept" \
+      >> "$HOME/.cache/cc-statusline/limits-rejected.log"
 fi
 added=${added:-0}; removed=${removed:-0}
 [[ "$added" =~ ^[0-9]+$ ]] || added=0
@@ -106,24 +130,6 @@ color_for_pct() {
   if   [ "$p" -ge 90 ]; then printf '%s' "$C_RED"
   elif [ "$p" -ge 70 ]; then printf '%s' "$C_YELLOW"
   else printf '%s' "$C_GREEN"; fi
-}
-
-# Rate-limit burn pace: used% relative to elapsed% of the window. >1 means
-# you'll hit the cap before it resets. Args: pct reset_epoch window_secs.
-# Echoes "pace class eta": class 0=safe(<1.0) 1=close(1.0-1.5) 2=hot(>=1.5);
-# eta = seconds until 100% at the current burn rate (0 when safe).
-pace_info() {
-  awk -v pct="$1" -v reset="$2" -v len="$3" -v now="$now" 'BEGIN{
-    rem = reset - now; if (rem < 0) rem = 0; if (rem > len) rem = len;
-    el = len - rem; if (el < 60) el = 60;
-    pace = (pct / 100) / (el / len); if (pace > 99) pace = 99;
-    # epsilon absorbs FP error at the thresholds (0.3/0.2 = 1.4999999999999998
-    # must classify as 1.5x red, not yellow)
-    cls = (pace >= 1.5 - 1e-9 ? 2 : (pace >= 1.0 - 1e-9 ? 1 : 0));
-    # under 5 minutes into a window the pace is mostly noise - no warning yet
-    if (el < 300) cls = 0;
-    eta = (cls > 0 && pct > 0 ? el * (100 - pct) / pct : 0);
-    printf "%.1f %d %.0f", pace, cls, eta }'
 }
 
 # ----------------------------------------------------------------------------
@@ -209,7 +215,8 @@ s5=""; s7=""
 # file, only appended bytes are parsed) and keeps the all-session API≈ scan off
 # the render path (shared result, refreshed in the background). Line 1: this
 # session's tokens + agent edit lines; line 2: API≈ line; line 3: window share.
-{ IFS= read -r scan_tot; IFS= read -r api_line; IFS= read -r sess_share_seg; } < <(
+acct_burn=""
+{ IFS= read -r scan_tot; IFS= read -r api_line; IFS= read -r sess_share_seg; IFS= read -r acct_burn; } < <(
   python3 "$HOME/.claude/statusline-scan.py" "$session_id" "$transcript_path" "${s5:-x}" "${s7:-x}" 2>/dev/null)
 read -r m_in m_out s_in s_out w_in w_out s_add s_rem w_add w_rem <<< "$scan_tot"
 if [ -f "$transcript_path" ]; then
@@ -326,21 +333,28 @@ if [[ "$sess_in" =~ ^[0-9]+$ ]] || [[ "$sess_out" =~ ^[0-9]+$ ]]; then
   tok_seg="${C_GREY}in${C_RESET} $(format_tokens "${sess_in:-0}") ${C_GREY}· out${C_RESET} $(format_tokens "${sess_out:-0}")"
 fi
 
-# Cost + burn rate ($/hr of model time, so idle time does not dilute it)
+# Burn colour bands widen as they rise: plain text under $20/hr, green to $60,
+# yellow to $140, orange to $300, red from $300. Plain (not white) stays readable
+# on light themes.
+burn_col() {
+  case "$(awk -v b="$1" 'BEGIN{print (b>=300 ? 4 : b>=140 ? 3 : b>=60 ? 2 : b>=20 ? 1 : 0)}')" in
+    4) printf '%s' "$C_RED" ;; 3) printf '%s' "$C_ORANGE" ;; 2) printf '%s' "$C_YELLOW" ;; 1) printf '%s' "$C_GREEN" ;;
+  esac
+}
+
+# Cost + burn rate. This session's rate is per hour of model time, so idle time
+# does not dilute it; the account rate is every session's spend in the last
+# hour of wall-clock time, so parallel sessions add up.
 cost_seg=""
 if [[ "$cost" =~ ^[0-9.]+$ ]]; then
   cost_seg="${C_GREY}api${C_RESET} ${C_BOLD}$(printf '$%.2f' "$cost")${C_RESET}"
   if [[ "$api_ms" =~ ^[0-9]+$ ]] && [ "$api_ms" -gt 0 ]; then
     burn=$(awk -v c="$cost" -v d="$api_ms" 'BEGIN{ if (d>0) printf "%.2f", c*3600000/d }')
-    if [ -n "$burn" ]; then
-      # Bands widen as they rise: plain text under $20/hr, green to $60, yellow to
-      # $140, orange to $300, red from $300. Plain (not white) stays readable on
-      # light themes.
-      bcls=$(awk -v b="$burn" 'BEGIN{print (b>=300 ? 4 : b>=140 ? 3 : b>=60 ? 2 : b>=20 ? 1 : 0)}')
-      case "$bcls" in 4) bcol="$C_RED" ;; 3) bcol="$C_ORANGE" ;; 2) bcol="$C_YELLOW" ;; 1) bcol="$C_GREEN" ;; *) bcol="" ;; esac
-      cost_seg="${cost_seg} ${bcol}🔥\$${burn}/hr${C_RESET}"
-    fi
+    [ -n "$burn" ] && cost_seg="${cost_seg} $(burn_col "$burn")🔥\$${burn}/hr${C_RESET}"
   fi
+fi
+if [[ "$acct_burn" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  cost_seg="${cost_seg}${cost_seg:+ ${C_GREY}·${C_RESET} }${C_GREY}acct${C_RESET} $(burn_col "$acct_burn")🔥\$${acct_burn}/hr${C_RESET}"
 fi
 
 # Code velocity (lines ±) this session: main loop (payload counter) plus
@@ -363,40 +377,11 @@ if [[ "$dur_ms" =~ ^[0-9]+$ ]] && [ "$dur_ms" -gt 0 ]; then
   fi
 fi
 
-# Rate-limit pace: a ▲ warning per window that will cap before it resets at
-# the current burn rate (pace > 1), collected into caps_line below.
-warn_for() { # label pct reset_epoch window_secs
-  [[ "$2" =~ ^[0-9.]+$ ]] && [[ "$3" =~ ^[0-9]+$ ]] || return 0
-  local pace cls eta
-  read -r pace cls eta <<< "$(pace_info "$2" "$3" "$4")"
-  case "$cls" in
-    2) printf '%s' "${C_RED}$1 ▲${pace}× caps ~$(format_dur "$eta")${C_RESET}" ;;
-    1) printf '%s' "${C_YELLOW}$1 ▲${pace}× caps ~$(format_dur "$eta")${C_RESET}" ;;
-  esac
-}
-block_warn=$(warn_for 5h "$five_pct" "$five_reset" 18000)
-limit_warn=$(warn_for 7d "$seven_pct" "$seven_reset" 604800)
-
-# Cap-warning line: only present when at least one window will cap before
-# it resets at the current burn rate.
-caps_line=""
-for w in "$block_warn" "$limit_warn"; do
-  [ -n "$w" ] || continue
-  [ -n "$caps_line" ] && caps_line="${caps_line} ${SEP} "
-  caps_line="${caps_line}${w}"
-done
-
 # ----------------------------------------------------------------------------
 # statusline-scan.py also prices usage across ALL sessions for the 5h, 7d and
 # billing-month windows (api_line). The status line doesn't print it; the
 # SwiftBar menu and statusline-global.sh read the same cached result.
 # ----------------------------------------------------------------------------
-
-# Append this session's window share to the cap-warning line (only visible
-# when a window is on pace to cap before it resets).
-if [ -n "$caps_line" ] && [ -n "$sess_share_seg" ]; then
-  caps_line="${caps_line} ${SEP} ${sess_share_seg}"
-fi
 
 # ----------------------------------------------------------------------------
 # Assemble
@@ -425,7 +410,6 @@ add_seg "$cost_seg"
 printf '%s\n' "$line1"
 printf '%s\n' "$line_model"
 [ -n "$line2" ] && printf '%s\n' "$line2"
-[ -n "$caps_line" ] && printf '%s\n' "$caps_line"
 
 # ----------------------------------------------------------------------------
 # Set the terminal window/tab title to the session's working directory.

@@ -7,8 +7,7 @@ These are instructions for Claude Code. Give it this folder or the repo URL and 
 ```
 ~/code/my-project  main* +2 ~1 ?3 ↑1  PR#12 ✓
 [Opus 5.5 · 1M] ⚡high🧠  245K ctx ▓▓▓░░░░░░░ 24%  my-session  [Auto]
-lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr
-5h ▲1.6× caps ~1h10m │ this session 5h 30% · 7d 8%        (only when a limit is about to be hit)
+lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr · acct 🔥$24.30/hr
 ```
 
 - Line 1: the folder, then the git branch. `*` means uncommitted changes, `+` staged files, `~` unstaged files, `?` untracked files, `↑`/`↓` commits ahead/behind the remote, `✗` conflicts. After that comes a clickable PR badge.
@@ -17,10 +16,10 @@ lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · 
   - Lines added and removed this session.
   - Tokens in and out, and each origin's share of them (main chat, subagents, workflows).
   - Session `age` (time since it started, idle time included) and how long the model `ran`.
-  - The API-equivalent cost and the burn rate per hour of model time. The burn colour is plain text under $20/hr, then green up to $60, yellow up to $140, orange up to $300 and red above that. Orange uses the 256-colour palette, which modern terminals support. To change the bands, edit the `bcls=` line in `statusline-command.sh`.
-- Line 4 appears only when the current pace will hit the 5-hour or 7-day limit before it resets.
+  - The API-equivalent cost and this session's burn rate per hour of model time, then `acct`: the account's burn rate, which is every Claude Code session's API-equivalent spend on this machine in the last hour, so parallel sessions add up. It comes from the shared background scan and can lag by a minute or two.
+  - Both rates use the same colours: plain text under $20/hr, then green up to $60, yellow up to $140, orange up to $300 and red above that. Orange uses the 256-colour palette, which modern terminals support. To change the bands, edit `burn_col` in `statusline-command.sh`.
 
-Costs are API-equivalent estimates, meaning what the usage would cost at API prices. On a subscription they're for scale, not a bill. The 5-hour and 7-day limits need a claude.ai subscription login. With an API key, line 4 stays empty.
+Costs are API-equivalent estimates, meaning what the usage would cost at API prices. On a subscription they're for scale, not a bill. The 5-hour and 7-day limits are shown in the SwiftBar menu rather than the status line, to keep the status line to three rows. They need a claude.ai subscription login.
 
 ## Install steps (for Claude)
 
@@ -46,7 +45,7 @@ Costs are API-equivalent estimates, meaning what the usage would cost at API pri
 - `CC_PLAN_PRICE`: monthly plan price. By default it's read from the plan in `~/.claude.json` (Pro $20, Max $100 or $200).
 - `CC_BILLING_DAY`: the day the billing month starts (default 1).
 - Account-wide views. Both are optional and read only the cache the status line keeps fresh, so they cost nothing extra:
-  - **Menu bar (SwiftBar, macOS):** `swiftbar/cc-usage.1m.py` shows `5h 3% · 7d 3%` in the menu bar, turning amber or red when a limit is close or will be hit before it resets. Its drop-down shows the reset times and the API-equivalent spend for the 5-hour window, the 7-day window and the billing month, the month's cost as a multiple of the plan price, the prompt-cache hit rate, the model mix and the month's token totals. It reruns every minute and shows how old its data is. With no Claude Code session open, the numbers stop updating, which is fine because usage isn't changing.
+  - **Menu bar (SwiftBar, macOS):** `swiftbar/cc-usage.1m.py` shows `5h 3% · 7d 3%` in the menu bar, turning amber or red when a limit is close or will be hit before it resets. Its drop-down starts with the Claude account Claude Code is signed in to and its plan (hover it for the email), then shows the reset times and the API-equivalent spend for the 5-hour window, the 7-day window and the billing month, the month's cost as a multiple of the plan price, the prompt-cache hit rate, the model mix and the month's token totals. It reruns every minute and shows how old its data is. With no Claude Code session open, the numbers stop updating, which is fine because usage isn't changing.
   - **Terminal panel:** `bash ~/.claude/statusline-global.sh [secs]` shows the same numbers in a spare terminal tab.
 - All costs count only Claude Code sessions on this machine. claude.ai, the Claude apps and other devices use the same limits but don't show up in the dollar figures.
 - The script also sets the terminal tab title to the session's folder. Delete the last block of `statusline-command.sh` to turn that off.

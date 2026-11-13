@@ -1,12 +1,11 @@
 # claude-code-meter
 
-A status line for [Claude Code](https://code.claude.com) that shows git state, context use, session tokens, cost and burn rate, and a warning when a 5-hour or 7-day limit is about to run out. There's also an optional macOS menu-bar view through [SwiftBar](https://swiftbar.app).
+A status line for [Claude Code](https://code.claude.com) that shows git state, context use, session tokens, cost, and burn rate for the session and the whole account. An optional macOS menu-bar view through [SwiftBar](https://swiftbar.app) shows the 5-hour and 7-day limits and the signed-in account.
 
 ```
 ~/code/my-project  main* +2 ~1 ?3 ↑1  PR#12 ✓
 [Opus 5.5 · 1M] ⚡high🧠  245K ctx ▓▓▓░░░░░░░ 24%  my-session  [Auto]
-lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr
-5h ▲1.6× caps ~1h10m │ this session 5h 30% · 7d 8%        (only when a limit is about to be hit)
+lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr · acct 🔥$24.30/hr
 ```
 
 ![The status line under a Claude Code prompt](docs/statusline.png)
