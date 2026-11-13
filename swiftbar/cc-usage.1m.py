@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 # <xbar.title>Claude Code usage</xbar.title>
-# <xbar.desc>Account-wide 5h/7d limits and API-equivalent cost from the Claude Code status line caches.</xbar.desc>
+# <xbar.desc>Account-wide 5h/7d limits (with per-model weekly limits such as Fable) and API-equivalent cost.</xbar.desc>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 """Menu-bar view of the global Claude Code numbers.
 
-Read-only and cheap by design: it only reads small JSON files that the status
-line already keeps fresh while any Claude Code session is active
-(~/.cache/cc-statusline/limits.json, api-result.json). No
-transcript scanning, no network, no background processes. When no session
-runs, usage cannot change, so stale-but-shown is correct; the age is shown in
-the menu.
+Limits come from Anthropic's usage endpoint, the same one /usage reads, because
+only it reports the per-model weekly limits (such as Fable). The request uses
+the access token Claude Code keeps in the macOS Keychain; the token is read for
+the request only, never stored or refreshed here. At most one request a minute;
+only the limit figures are cached (~/.cache/cc-statusline/usage-api.json, 0600).
+If the request fails, the menu falls back to the all-models figures the status
+line writes (limits.json). Costs come from api-result.json. No transcript
+scanning and no background processes.
 """
-import base64, datetime, json, os, time
+import base64, datetime, getpass, json, os, ssl, subprocess, time, urllib.request
 
 CACHE = os.path.expanduser("~/.cache/cc-statusline")
 now = time.time()
@@ -103,17 +105,115 @@ def account_rows():
     return rows
 
 
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_TTL = 55  # SwiftBar reruns the plugin every minute
+
+
+def iso_ts(v):
+    try:
+        return datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def access_token():
+    try:
+        raw = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials",
+                              "-a", getpass.getuser(), "-w"], capture_output=True, text=True, timeout=10).stdout
+        oauth = json.loads(raw).get("claudeAiOauth") or {}
+    except Exception:
+        return None
+    exp = num(oauth.get("expiresAt"))
+    if exp and exp / 1000 < now:
+        return None  # expired: Claude Code refreshes it on its next request
+    return oauth.get("accessToken")
+
+
+def account_id():
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = os.path.join(cfg, ".claude.json") if cfg else os.path.expanduser("~/.claude.json")
+    try:
+        with open(path) as f:
+            return (json.load(f).get("oauthAccount") or {}).get("accountUuid")
+    except Exception:
+        return None
+
+
+def tls():
+    """python.org builds ship without a CA bundle until "Install Certificates" is
+    run; macOS keeps the system roots at /etc/ssl/cert.pem, so use that then."""
+    paths = ssl.get_default_verify_paths()
+    if not (paths.cafile or (paths.capath and os.listdir(paths.capath))) and os.path.exists("/etc/ssl/cert.pem"):
+        return ssl.create_default_context(cafile="/etc/ssl/cert.pem")
+    return ssl.create_default_context()
+
+
+def fetch_limits():
+    """[(label, short, pct, reset, length)] from the usage endpoint, cached for a minute.
+    The cache belongs to one account: after a switch it is ignored, so the new
+    account's limits are fetched at once and the old ones are never shown for it."""
+    path = os.path.join(CACHE, "usage-api.json")
+    acct = account_id()
+    cached = load("usage-api.json")
+    if cached and cached.get("acct") != acct:
+        cached = None
+    if cached and now - num(cached.get("at") or 0) < USAGE_TTL:
+        return cached.get("limits"), cached.get("at")
+    tok = access_token()
+    if not tok:
+        return (cached or {}).get("limits"), (cached or {}).get("at")
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": "Bearer " + tok, "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "claude-code-meter"})
+    try:
+        with urllib.request.urlopen(req, timeout=8, context=tls()) as r:
+            body = json.load(r)
+    except Exception:
+        return (cached or {}).get("limits"), (cached or {}).get("at")
+    rows = []
+    for l in body.get("limits") or []:
+        pct, reset = num(l.get("percent")), iso_ts(l.get("resets_at"))
+        if pct is None:
+            continue
+        model = (((l.get("scope") or {}).get("model") or {}).get("display_name") or "").strip()
+        kind, group = str(l.get("kind") or ""), str(l.get("group") or "")
+        weekly = group == "weekly" or kind.startswith("weekly")
+        five = "five" in kind or "session" in kind or "five" in group or "session" in group
+        base, short = ("7-day", "7d") if weekly else ("5-hour", "5h") if five else (group or kind, group or kind)
+        if model:
+            base, short = "%s %s" % (base, model), model
+        rows.append([base, short, pct, reset, 604800 if weekly else 18000 if five else None])
+    os.makedirs(CACHE, exist_ok=True)
+    tmp = path + ".%d" % os.getpid()
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        json.dump({"at": now, "acct": acct, "limits": rows}, f)
+    os.replace(tmp, path)
+    return rows, now
+
+
 lim = load("limits.json") or {}
 res = load("api-result.json")
+api_rows, api_at = None, None
+try:
+    api_rows, api_at = fetch_limits()
+except Exception:
+    pass
+if api_rows:
+    limit_rows = api_rows
+else:  # offline or signed out: the all-models figures the status line saw
+    limit_rows = [[name, label, num(lim.get(pk)), num(lim.get(rk)), length]
+                  for label, name, pk, rk, length in (("5h", "5-hour", "five_pct", "five_reset", 18000),
+                                                      ("7d", "7-day", "seven_pct", "seven_reset", 604800))]
 
 # ---------------------------------------------------------------- limits
 title, rows, level = [], [], 0  # level: 0 normal, 1 warn, 2 alert
-for label, name, pk, rk, length, fmt, icon in (
-        ("5h", "5-hour", "five_pct", "five_reset", 18000, "%H:%M", "clock"),
-        ("7d", "7-day ", "seven_pct", "seven_reset", 604800, "%a %b %-d", "calendar")):
-    pct, reset = num(lim.get(pk)), num(lim.get(rk))
+width = max([len(r[0]) for r in limit_rows] + [6])
+for name, label, pct, reset, length in limit_rows:
     if pct is None:
         continue
+    weekly = length == 604800
+    fmt, icon = ("%a %b %-d", "calendar") if weekly else ("%H:%M", "clock")
+    name = name.ljust(width)
     if reset is not None and reset <= now:
         title.append("%s –" % label)
         rows.append(("%s  window reset, no usage since" % name, "sfimage=%s %s" % (icon, MONO), None))
@@ -124,14 +224,18 @@ for label, name, pk, rk, length, fmt, icon in (
     line = "%s %s %3d%%" % (name, bar(p), p)
     if reset is not None:
         line += "   resets %s · in %s" % (datetime.datetime.fromtimestamp(reset).strftime(fmt), dur(reset - now))
-        pc, cls, eta = pace(pct, reset, length)
+        if length:
+            pc, cls, eta = pace(pct, reset, length)
     pace_cls = cls
     if p >= 90: cls = 2
     elif p >= 70: cls = max(cls, 1)
     level = max(level, cls)
     color = {1: " color=" + AMBER, 2: " color=" + RED}.get(cls, "")
     warn = None
-    if pace_cls:
+    if p >= 100:
+        warn = ("%s limit reached · resets in %s" % (name.strip(), dur(reset - now)) if reset else
+                "%s limit reached" % name.strip(), "sfimage=exclamationmark.octagon " + MONO + color)
+    elif pace_cls:
         warn = ("%s ▲ %.1f× the refill pace · caps in ~%s" % (name.strip(), pc, dur(eta)), "sfimage=exclamationmark.triangle " + MONO + color)
     rows.append((line, "sfimage=%s %s%s" % (icon, MONO, color), warn))
 
@@ -203,8 +307,10 @@ if res and res.get("w"):
 # ---------------------------------------------------------------- footer
 print("---")
 ages = []
-if num(lim.get("at")) is not None:
-    ages.append("limits %s ago" % dur(now - num(lim["at"])))
+if api_rows and api_at:
+    ages.append("limits %s ago" % dur(now - num(api_at)))
+elif num(lim.get("at")) is not None:
+    ages.append("limits %s ago (offline: all models only)" % dur(now - num(lim["at"])))
 if res and num(res.get("at")) is not None:
     ages.append("costs %s ago" % dur(now - res["at"]))
 item("Updated " + (", ".join(ages) or "never"), HEAD)

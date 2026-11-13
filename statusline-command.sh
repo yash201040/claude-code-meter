@@ -69,13 +69,16 @@ short_cwd="${raw_cwd/#$HOME/~}"
 # usage plugin. Each session only knows the numbers from its own last API reply, so
 # an idle session that re-renders would write an old, lower figure. Usage never
 # drops within one window, so for the same reset time keep the higher figure, and
-# take a new window's figure as soon as any session reports it.
+# take a new window's figure as soon as any session reports it. The figures belong
+# to the signed-in account: after a switch (/login) the stored ones are dropped
+# instead of merged, so the old account's higher percentage never carries over.
 if [[ "$five_pct" =~ ^[0-9.]+$ ]] || [[ "$seven_pct" =~ ^[0-9.]+$ ]]; then
   mkdir -p "$HOME/.cache/cc-statusline"
   lim="$HOME/.cache/cc-statusline/limits.json"
-  merged=$(jq -cn --argjson now "$now" --arg fp "$five_pct" --arg fr "$five_reset" \
+  acct=$(jq -r '.oauthAccount.accountUuid // ""' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" 2>/dev/null)
+  merged=$(jq -cn --argjson now "$now" --arg fp "$five_pct" --arg fr "$five_reset" --arg acct "$acct" \
       --arg sp "$seven_pct" --arg sr "$seven_reset" --slurpfile old <(cat "$lim" 2>/dev/null || true) '
-    ($old[0] // {}) as $o
+    (($old[0] // {}) | if (.acct // "") == $acct then . else {} end) as $o
     | def pick($p; $r; $op; $or):
         if ($p | test("^[0-9.]+$") | not) then [$op, $or]
         elif ($or | tostring | test("^[0-9]+$") | not) or ($op | tostring | test("^[0-9.]+$") | not) then [$p, $r]
@@ -86,7 +89,7 @@ if [[ "$five_pct" =~ ^[0-9.]+$ ]] || [[ "$seven_pct" =~ ^[0-9.]+$ ]]; then
         else [$op, $or] end;
       pick($fp; $fr; ($o.five_pct // ""); ($o.five_reset // "")) as [$f, $fr2]
     | pick($sp; $sr; ($o.seven_pct // ""); ($o.seven_reset // "")) as [$s, $sr2]
-    | {at: $now, five_pct: ($f|tostring), five_reset: ($fr2|tostring), seven_pct: ($s|tostring), seven_reset: ($sr2|tostring)}' 2>/dev/null)
+    | {at: $now, five_pct: ($f|tostring), five_reset: ($fr2|tostring), seven_pct: ($s|tostring), seven_reset: ($sr2|tostring), acct: $acct}' 2>/dev/null)
   [[ -n "$merged" ]] || merged=$(printf '{"at":%s,"five_pct":"%s","five_reset":"%s","seven_pct":"%s","seven_reset":"%s"}' \
     "$now" "$five_pct" "$five_reset" "$seven_pct" "$seven_reset")
   printf '%s\n' "$merged" > "$lim.$$" && mv -f "$lim.$$" "$lim"
