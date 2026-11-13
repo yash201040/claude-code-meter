@@ -215,12 +215,17 @@ for name, label, pct, reset, length in limit_rows:
     weekly = length == 604800
     fmt, icon = ("%a %b %-d", "calendar") if weekly else ("%H:%M", "clock")
     name = name.ljust(width)
+    # Only the standard (all-models) limits go in the menu-bar title and set its
+    # colour; per-model limits such as Fable stay in the drop-down.
+    std = label in ("5h", "7d")
     if reset is not None and reset <= now:
-        title.append("%s –" % label)
+        if std:
+            title.append("%s –" % label)
         rows.append(("%s  window reset, no usage since" % name, "sfimage=%s %s" % (icon, MONO), None))
         continue
     p = round(pct)
-    title.append("%s %d%%" % (label, p))
+    if std:
+        title.append("%s %d%%" % (label, p))
     cls, pc, eta = 0, 0, 0
     line = "%s %s %3d%%" % (name, bar(p), p)
     if reset is not None:
@@ -230,7 +235,8 @@ for name, label, pct, reset, length in limit_rows:
     pace_cls = cls
     if p >= 90: cls = 2
     elif p >= 70: cls = max(cls, 1)
-    level = max(level, cls)
+    if std:
+        level = max(level, cls)
     color = {1: " color=" + AMBER, 2: " color=" + RED}.get(cls, "")
     warn = None
     if pace_cls and p < 100:  # a full bar says it all
