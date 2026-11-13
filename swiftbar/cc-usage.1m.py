@@ -240,7 +240,7 @@ for name, label, pct, reset, length in limit_rows:
     color = {1: " color=" + AMBER, 2: " color=" + RED}.get(cls, "")
     warn = None
     if pace_cls and p < 100:  # a full bar says it all
-        warn = ("%s ▲ %.1f× the refill pace · caps in ~%s" % (name.strip(), pc, dur(eta)), "sfimage=exclamationmark.triangle " + MONO + color)
+        warn = ("%s ▲ %.1f× the refill pace · caps in ~%s" % (name.strip(), pc, dur(eta)), MONO + color)
     rows.append((line, "sfimage=%s %s%s" % (icon, MONO, color), warn))
 
 # Title icon: the Claude desktop app's own menu-bar icon (a template image, so
