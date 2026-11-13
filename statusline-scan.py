@@ -9,8 +9,8 @@ prints four lines:
   1. m_in m_out s_in s_out w_in w_out s_add s_rem w_add w_rem   (this session)
   2. the API-equivalent cost line (ANSI-colored, empty when nothing to show)
   3. this session's share of the 5h/7d windows (ANSI-colored, may be empty)
-  4. the account burn rate: API-equivalent $ of every session in the last hour
-     (a plain number, empty until the shared scan has a 1h window)
+  4. the account burn rate: API-equivalent $ of every session in the last hour,
+     per hour of model time across them (a plain number, may be empty)
 
 Session totals: transcripts are append-only, so each file's byte offset is kept
 and only bytes appended since are parsed. Cache: ~/.cache/cc-statusline/.
@@ -32,6 +32,11 @@ FILES_CACHE = os.path.join(CACHE_DIR, "files.json")
 RESULT = os.path.join(CACHE_DIR, "api-result.json")
 LOCK = os.path.join(CACHE_DIR, "scan.lock")
 SCAN_TTL = 60
+# Bumped when the per-entry layout in files.json changes: the cache is rebuilt once.
+CACHE_VERSION = 2
+# A reply that came this long after its request is counted as this long: past it,
+# the gap is more likely a stall or a queued prompt than the model working.
+MAX_CALL_SECS = 600
 NONE_TS = 9999999999
 PRICES = {"fable": (10, 50), "opus": (5, 25), "sonnet": (3, 15), "haiku": (1, 5), "other": (5, 25)}
 
@@ -252,17 +257,24 @@ def plan():
     return "20", "plan"
 
 
-def extract_usage(path, off):
+def extract_usage(path, rec):
+    """Usage entries appended since rec["off"]. Each entry also carries when its
+    request went out: the time of the user prompt or tool result written just
+    before the reply (kept in rec["q"] across incremental reads)."""
     out = []
-    lines, off = read_new(path, off)
+    lines, rec["off"] = read_new(path, rec["off"])
     for line in lines:
-        if b'"usage"' not in line:
+        is_user = b'"type":"user"' in line
+        if not is_user and b'"usage"' not in line:
             continue
         try:
             e = json.loads(line)
         except Exception:
             continue
         if not isinstance(e, dict):
+            continue
+        if is_user and e.get("type") == "user":
+            rec["q"] = parse_ts(e.get("timestamp") or "")
             continue
         msg, u = usage_of(e)
         if u is None:
@@ -275,9 +287,9 @@ def extract_usage(path, off):
             dedup_key(e, msg), parse_ts(e.get("timestamp") or ""), e.get("sessionId") or "", tier(model),
             u.get("input_tokens") or 0, u.get("cache_creation_input_tokens") or 0,
             cc.get("ephemeral_1h_input_tokens") or 0, u.get("cache_read_input_tokens") or 0,
-            u.get("output_tokens") or 0,
+            u.get("output_tokens") or 0, rec.get("q") or 0,
         ])
-    return out, off
+    return out
 
 
 def cost(en):
@@ -290,6 +302,8 @@ def refresh(s5, s7):
     sm = billing_start()
     earliest = min(s5, s7, sm)
     cache = load(FILES_CACHE, {})
+    if cache.get("_v") != CACHE_VERSION:
+        cache = {}  # older layout without request times: rescan once
     seen = set()
     for path in glob.glob(os.path.join(PROJ, "**", "*.jsonl"), recursive=True):
         try:
@@ -303,21 +317,27 @@ def refresh(s5, s7):
         if rec is None or st.st_size < rec["off"]:
             rec = {"off": 0, "e": []}
         if st.st_size > rec["off"]:
-            new, rec["off"] = extract_usage(path, rec["off"])
-            rec["e"].extend(new)
+            rec["e"].extend(extract_usage(path, rec))
         cache[path] = rec
     for path in list(cache):
         if path not in seen:
             del cache[path]
+    cache["_v"] = CACHE_VERSION
     save(FILES_CACHE, cache)
+    del cache["_v"]
 
-    # "1h" is a rolling last hour across every session: its cost is the account's
-    # current burn rate in $/hr of wall-clock time.
+    # "1h" is a rolling last hour across every session. Its spend divided by the
+    # model time in it is the account's burn rate, so idle time does not dilute
+    # it. Model time is the union of every call's request-to-reply span, so
+    # sessions and subagents running at once count their shared time once.
     s1 = int(time.time()) - 3600
     w = {k: {"in": 0, "out": 0, "cost": 0.0, "cr": 0} for k in ("1h", "5h", "7d", "mo")}
-    tiers, sess5, sess7 = {}, {}, {}
+    tiers, sess5, sess7, spans = {}, {}, {}, []
     for en in dedup([en for rec in cache.values() for en in rec["e"]], 8):
         t, c = en[1], cost(en)
+        q = en[9] if len(en) > 9 else 0
+        if t >= s1 and 0 < q < t:
+            spans.append((max(q, t - MAX_CALL_SECS, s1), t))
         for k, start in (("1h", s1), ("5h", s5), ("7d", s7), ("mo", sm)):
             if t >= start:
                 w[k]["in"] += en[4] + en[5] + en[7]; w[k]["out"] += en[8]
@@ -327,6 +347,13 @@ def refresh(s5, s7):
         if en[2]:
             if t >= s5: sess5[en[2]] = sess5.get(en[2], 0) + c
             if t >= s7: sess7[en[2]] = sess7.get(en[2], 0) + c
+    active, end = 0.0, 0.0
+    for a, b in sorted(spans):
+        if b <= end:
+            continue
+        active += b - max(a, end)
+        end = b
+    w["1h"]["active"] = active
     price, name = plan()
     save(RESULT, {"at": time.time(), "s5": s5, "s7": s7, "sm": sm, "w": w, "tiers": tiers,
                   "sess5": sess5, "sess7": sess7, "price": price, "plan": name})
@@ -418,11 +445,15 @@ def main():
         line, share = api_lines(sid, res)
     except Exception:
         line, share = "", ""
+    acc = ""
     try:
-        acct = "%.2f" % res["w"]["1h"]["cost"]
+        h = res["w"]["1h"]
+        # Under a minute of model time the rate is mostly noise; show nothing yet.
+        if h["cost"] > 0 and h.get("active", 0) >= 60:
+            acc = "%.2f" % (h["cost"] * 3600 / h["active"])
     except Exception:
-        acct = ""  # a result saved before the 1h window existed: shown after the next refresh
-    sys.stdout.write(" ".join(map(str, tot)) + "\n" + line + "\n" + share + "\n" + acct + "\n")
+        pass  # a result saved before the 1h window existed: shown after the next refresh
+    sys.stdout.write(" ".join(map(str, tot)) + "\n" + line + "\n" + share + "\n" + acc + "\n")
 
 
 if __name__ == "__main__":

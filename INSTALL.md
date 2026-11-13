@@ -7,7 +7,7 @@ These are instructions for Claude Code. Give it this folder or the repo URL and 
 ```
 ~/code/my-project  main* +2 ~1 ?3 ↑1  PR#12 ✓
 [Opus 5.5 · 1M] ⚡high🧠  245K ctx ▓▓▓░░░░░░░ 24%  my-session  [Auto]
-lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr · acct 🔥$24.30/hr
+lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr · acc 🔥$9.40/hr
 ```
 
 - Line 1: the folder, then the git branch. `*` means uncommitted changes, `+` staged files, `~` unstaged files, `?` untracked files, `↑`/`↓` commits ahead/behind the remote, `✗` conflicts. After that comes a clickable PR badge.
@@ -16,7 +16,7 @@ lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · 
   - Lines added and removed this session.
   - Tokens in and out, and each origin's share of them (main chat, subagents, workflows).
   - Session `age` (time since it started, idle time included) and how long the model `ran`.
-  - The API-equivalent cost and this session's burn rate per hour of model time, then `acct`: the account's burn rate, which is every Claude Code session's API-equivalent spend on this machine in the last hour, so parallel sessions add up. It comes from the shared background scan and can lag by a minute or two.
+  - The API-equivalent cost and this session's burn rate per hour of model time, then `acc`: the account's burn rate. That is every Claude Code session's API-equivalent spend on this machine in the last hour, divided by the time in that hour when any of them had the model working. Idle time is left out of both rates, and sessions running at the same time add up. It comes from the shared background scan and can lag by a minute or two.
   - Both rates use the same colours: plain text under $20/hr, then green up to $60, yellow up to $140, orange up to $300 and red above that. Orange uses the 256-colour palette, which modern terminals support. To change the bands, edit `burn_col` in `statusline-command.sh`.
 
 Costs are API-equivalent estimates, meaning what the usage would cost at API prices. On a subscription they're for scale, not a bill. The 5-hour and 7-day limits are shown in the SwiftBar menu rather than the status line, to keep the status line to three rows. They need a claude.ai subscription login.

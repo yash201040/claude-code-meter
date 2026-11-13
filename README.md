@@ -5,7 +5,7 @@ A status line for [Claude Code](https://code.claude.com) that shows git state, c
 ```
 ~/code/my-project  main* +2 ~1 ?3 ↑1  PR#12 ✓
 [Opus 5.5 · 1M] ⚡high🧠  245K ctx ▓▓▓░░░░░░░ 24%  my-session  [Auto]
-lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr · acct 🔥$24.30/hr
+lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · ran 42m │ api $4.10 🔥$5.86/hr · acc 🔥$9.40/hr
 ```
 
 ![The status line under a Claude Code prompt](docs/statusline.png)

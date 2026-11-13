@@ -4,7 +4,7 @@
 # Line 1: cwd, git branch (* dirty, +staged ~unstaged ?untracked ↑ahead ↓behind ✗conflicts), PR badge
 # Line 2: [model · window] ⚡effort🧠  context tokens + bar + %  session name  [permission mode]
 # Line 3: lines +a/-r │ in · out · main/agents/wf share │ age · ran (model time) │ cost 🔥$/hr of model time
-#         · acct 🔥$/hr (every session's API-equivalent spend in the last hour)
+#         · acc 🔥$/hr (every session's spend in the last hour, per hour of model time)
 #         (burn colour, both rates: plain under $20/hr, green to $60, yellow to $140, orange to $300, red above)
 # The 5h/7d limits live in the SwiftBar menu (cc-usage), not here.
 #
@@ -215,8 +215,8 @@ s5=""; s7=""
 # file, only appended bytes are parsed) and keeps the all-session API≈ scan off
 # the render path (shared result, refreshed in the background). Line 1: this
 # session's tokens + agent edit lines; line 2: API≈ line; line 3: window share.
-acct_burn=""
-{ IFS= read -r scan_tot; IFS= read -r api_line; IFS= read -r sess_share_seg; IFS= read -r acct_burn; } < <(
+acc_burn=""
+{ IFS= read -r scan_tot; IFS= read -r api_line; IFS= read -r sess_share_seg; IFS= read -r acc_burn; } < <(
   python3 "$HOME/.claude/statusline-scan.py" "$session_id" "$transcript_path" "${s5:-x}" "${s7:-x}" 2>/dev/null)
 read -r m_in m_out s_in s_out w_in w_out s_add s_rem w_add w_rem <<< "$scan_tot"
 if [ -f "$transcript_path" ]; then
@@ -342,9 +342,9 @@ burn_col() {
   esac
 }
 
-# Cost + burn rate. This session's rate is per hour of model time, so idle time
-# does not dilute it; the account rate is every session's spend in the last
-# hour of wall-clock time, so parallel sessions add up.
+# Cost + burn rate, both per hour of model time so idle time does not dilute
+# them. The account rate is every session's spend in the last hour over the
+# time any of them had the model working, so parallel sessions add up.
 cost_seg=""
 if [[ "$cost" =~ ^[0-9.]+$ ]]; then
   cost_seg="${C_GREY}api${C_RESET} ${C_BOLD}$(printf '$%.2f' "$cost")${C_RESET}"
@@ -353,8 +353,8 @@ if [[ "$cost" =~ ^[0-9.]+$ ]]; then
     [ -n "$burn" ] && cost_seg="${cost_seg} $(burn_col "$burn")🔥\$${burn}/hr${C_RESET}"
   fi
 fi
-if [[ "$acct_burn" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-  cost_seg="${cost_seg}${cost_seg:+ ${C_GREY}·${C_RESET} }${C_GREY}acct${C_RESET} $(burn_col "$acct_burn")🔥\$${acct_burn}/hr${C_RESET}"
+if [[ "$acc_burn" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  cost_seg="${cost_seg}${cost_seg:+ ${C_GREY}·${C_RESET} }${C_GREY}acc${C_RESET} $(burn_col "$acc_burn")🔥\$${acc_burn}/hr${C_RESET}"
 fi
 
 # Code velocity (lines ±) this session: main loop (payload counter) plus
