@@ -12,7 +12,7 @@ lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · 
 
 The optional SwiftBar menu-bar view (macOS):
 
-![The SwiftBar menu with 5-hour and 7-day limits and API-equivalent spend](docs/menubar.png)
+![The SwiftBar menu with the signed-in account, usage limits and API-equivalent spend](docs/menubar.png)
 
 ## Install
 
