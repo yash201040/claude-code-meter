@@ -179,9 +179,10 @@ def fetch_limits():
         kind, group = str(l.get("kind") or ""), str(l.get("group") or "")
         weekly = group == "weekly" or kind.startswith("weekly")
         five = "five" in kind or "session" in kind or "five" in group or "session" in group
-        base, short = ("7-day", "7d") if weekly else ("5-hour", "5h") if five else (group or kind, group or kind)
+        # "standard" tells the all-models week apart from the per-model ones below it.
+        base, short = ("7-day standard", "7d") if weekly else ("5-hour", "5h") if five else (group or kind, group or kind)
         if model:
-            base, short = "%s %s" % (base, model), model
+            base, short = "%s %s" % ("7-day" if weekly else base, model), model
         rows.append([base, short, pct, reset, 604800 if weekly else 18000 if five else None])
     os.makedirs(CACHE, exist_ok=True)
     tmp = path + ".%d" % os.getpid()
@@ -203,7 +204,7 @@ if api_rows:
 else:  # offline or signed out: the all-models figures the status line saw
     limit_rows = [[name, label, num(lim.get(pk)), num(lim.get(rk)), length]
                   for label, name, pk, rk, length in (("5h", "5-hour", "five_pct", "five_reset", 18000),
-                                                      ("7d", "7-day", "seven_pct", "seven_reset", 604800))]
+                                                      ("7d", "7-day standard", "seven_pct", "seven_reset", 604800))]
 
 # ---------------------------------------------------------------- limits
 title, rows, level = [], [], 0  # level: 0 normal, 1 warn, 2 alert
@@ -232,10 +233,7 @@ for name, label, pct, reset, length in limit_rows:
     level = max(level, cls)
     color = {1: " color=" + AMBER, 2: " color=" + RED}.get(cls, "")
     warn = None
-    if p >= 100:
-        warn = ("%s limit reached · resets in %s" % (name.strip(), dur(reset - now)) if reset else
-                "%s limit reached" % name.strip(), "sfimage=exclamationmark.octagon " + MONO + color)
-    elif pace_cls:
+    if pace_cls and p < 100:  # a full bar says it all
         warn = ("%s ▲ %.1f× the refill pace · caps in ~%s" % (name.strip(), pc, dur(eta)), "sfimage=exclamationmark.triangle " + MONO + color)
     rows.append((line, "sfimage=%s %s%s" % (icon, MONO, color), warn))
 
