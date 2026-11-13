@@ -157,7 +157,7 @@ def fetch_limits():
     cached = load("usage-api.json")
     if cached and cached.get("acct") != acct:
         cached = None
-    if cached and now - num(cached.get("at") or 0) < USAGE_TTL:
+    if cached and (now - num(cached.get("at") or 0) < USAGE_TTL or now < num(cached.get("retry_at") or 0)):
         return cached.get("limits"), cached.get("at")
     tok = access_token()
     if not tok:
@@ -168,7 +168,20 @@ def fetch_limits():
     try:
         with urllib.request.urlopen(req, timeout=8, context=tls()) as r:
             body = json.load(r)
-    except Exception:
+    except Exception as e:
+        # The endpoint is rate-limited: after a refusal or error, keep the last
+        # figures and wait 5 minutes (or as long as it asks) before asking again.
+        wait = 300
+        try:
+            wait = max(wait, int(e.headers.get("Retry-After") or 0))
+        except Exception:
+            pass
+        if cached:
+            cached["retry_at"] = now + wait
+            tmp = path + ".%d" % os.getpid()
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                json.dump(cached, f)
+            os.replace(tmp, path)
         return (cached or {}).get("limits"), (cached or {}).get("at")
     rows = []
     for l in body.get("limits") or []:
