@@ -65,41 +65,47 @@ IFS=$'\037' read -r model raw_cwd session_name session_id used window_size used_
   effort thinking cost dur_ms api_ms added removed \
   five_pct five_reset seven_pct seven_reset pr_num pr_state pr_url perm_raw transcript_path <<< "$vals"
 
-short_cwd="${raw_cwd/#$HOME/~}"
+short_cwd="$raw_cwd"
+case "$raw_cwd" in "$HOME") short_cwd="~" ;; "$HOME"/*) short_cwd="~${raw_cwd#"$HOME"}" ;; esac
 
 # Publish the account-wide 5h/7d limits for statusline-global.sh and the menu-bar
 # usage plugin. Each session only knows the numbers from its own last API reply, so
-# an idle session that re-renders would write an old, lower figure. Usage never
-# drops within one window, so for the same reset time keep the higher figure, and
-# take a new window's figure as soon as any session reports it. The figures belong
+# an idle session that re-renders would write old figures, and one still running on
+# an account signed out of since would write that account's. So within one window
+# only a session working right now (its transcript changed in the last 2 minutes,
+# so its figures came with a fresh reply) may change the stored figure, up or down:
+# a plan change or a limit increase can lower it mid-window. A new window's figure
+# is taken as soon as any session reports it. The figures belong
 # to the signed-in account: after a switch (/login) the stored ones are dropped
 # instead of merged, so the old account's higher percentage never carries over.
 if [[ "$five_pct" =~ ^[0-9.]+$ ]] || [[ "$seven_pct" =~ ^[0-9.]+$ ]]; then
   mkdir -p "$HOME/.cache/cc-statusline"
   lim="$HOME/.cache/cc-statusline/limits.json"
   acct=$(jq -r '.oauthAccount.accountUuid // ""' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" 2>/dev/null)
+  fresh=false
+  if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+    t_mod=$(stat -f %m "$transcript_path" 2>/dev/null || stat -c %Y "$transcript_path" 2>/dev/null)
+    [[ "$t_mod" =~ ^[0-9]+$ ]] && (( now - t_mod < 120 )) && fresh=true
+  fi
   merged=$(jq -cn --argjson now "$now" --arg fp "$five_pct" --arg fr "$five_reset" --arg acct "$acct" \
+      --argjson fresh "$fresh" \
       --arg sp "$seven_pct" --arg sr "$seven_reset" --slurpfile old <(cat "$lim" 2>/dev/null || true) '
     (($old[0] // {}) | if (.acct // "") == $acct then . else {} end) as $o
     | def pick($p; $r; $op; $or):
         if ($p | test("^[0-9.]+$") | not) then [$op, $or]
         elif ($or | tostring | test("^[0-9]+$") | not) or ($op | tostring | test("^[0-9.]+$") | not) then [$p, $r]
+        elif ($r | test("^[0-9]+$") | not) then [$op, $or]
         elif ($r | tonumber) > ($or | tonumber) + 60 then [$p, $r]
         elif ($r | tonumber) < ($or | tonumber) - 60 then
           (if ($or | tonumber) <= $now then [$p, $r] else [$op, $or] end)
-        elif ($p | tonumber) >= ($op | tonumber) then [$p, $r]
+        elif $fresh then [$p, $r]
         else [$op, $or] end;
       pick($fp; $fr; ($o.five_pct // ""); ($o.five_reset // "")) as [$f, $fr2]
     | pick($sp; $sr; ($o.seven_pct // ""); ($o.seven_reset // "")) as [$s, $sr2]
     | {at: $now, five_pct: ($f|tostring), five_reset: ($fr2|tostring), seven_pct: ($s|tostring), seven_reset: ($sr2|tostring), acct: $acct}' 2>/dev/null)
-  [[ -n "$merged" ]] || merged=$(printf '{"at":%s,"five_pct":"%s","five_reset":"%s","seven_pct":"%s","seven_reset":"%s"}' \
-    "$now" "$five_pct" "$five_reset" "$seven_pct" "$seven_reset")
-  printf '%s\n' "$merged" > "$lim.$$" && mv -f "$lim.$$" "$lim"
-  # Note each stale figure that was turned away, so a disagreement can be traced.
-  kept=$(jq -r .seven_pct <<< "$merged" 2>/dev/null)
-  [[ "$seven_pct" =~ ^[0-9.]+$ && "$kept" != "$seven_pct" ]] && \
-    printf '%s session %s reported 7d=%s, kept %s\n' "$(date '+%F %T')" "$session_id" "$seven_pct" "$kept" \
-      >> "$HOME/.cache/cc-statusline/limits-rejected.log"
+  if [[ -n "$merged" ]]; then
+    printf '%s\n' "$merged" > "$lim.$$" && mv -f "$lim.$$" "$lim"
+  fi
 fi
 added=${added:-0}; removed=${removed:-0}
 [[ "$added" =~ ^[0-9]+$ ]] || added=0
@@ -212,10 +218,14 @@ m_in=0; m_out=0; s_in=0; s_out=0; w_in=0; w_out=0
 s_add=0; s_rem=0; w_add=0; w_rem=0
 api_line=""; sess_share_seg=""
 # Window starts (epoch) for the API≈ line; the scanner treats non-numbers as
-# "window unavailable".
+# "window unavailable". They come from the account-wide figures above, not this
+# session's own, so every session asks the shared scan for the same windows (a
+# disagreement would make each render start another background rescan).
+lim_json="${merged:-}"
+[[ -n "$lim_json" ]] || lim_json=$(cat "$HOME/.cache/cc-statusline/limits.json" 2>/dev/null)
 s5=""; s7=""
-[[ "$five_reset"  =~ ^[0-9]+$ ]] && s5=$(( five_reset  - 18000 ))
-[[ "$seven_reset" =~ ^[0-9]+$ ]] && s7=$(( seven_reset - 604800 ))
+[[ "$lim_json" =~ \"five_reset\":\"([0-9]+)\" ]]  && (( BASH_REMATCH[1] > now )) && s5=$(( BASH_REMATCH[1] - 18000 ))
+[[ "$lim_json" =~ \"seven_reset\":\"([0-9]+)\" ]] && (( BASH_REMATCH[1] > now )) && s7=$(( BASH_REMATCH[1] - 604800 ))
 # statusline-scan.py does all transcript work incrementally (byte offsets per
 # file, only appended bytes are parsed) and keeps the all-session API≈ scan off
 # the render path (shared result, refreshed in the background). Line 1: this
@@ -288,17 +298,16 @@ git_part=""
 # One `git status` call (porcelain v2 + branch header) instead of eight.
 if gs=$(git -C "$raw_cwd" --no-optional-locks status --porcelain=v2 --branch --untracked-files=all 2>/dev/null); then
   branch="detached"; oid=""; staged=0; unstaged=0; untracked=0; conflicts=0; ahead=0; behind=0
-  while IFS= read -r l; do
-    case "$l" in
-      "# branch.head "*) branch=${l#\# branch.head } ;;
-      "# branch.oid "*)  oid=${l#\# branch.oid } ;;
-      "# branch.ab "*)   ab=${l#\# branch.ab +}; ahead=${ab%% *}; behind=${ab##*-} ;;
-      "1 "*|"2 "*)       [ "${l:2:1}" != "." ] && staged=$(( staged + 1 ))
-                         [ "${l:3:1}" != "." ] && unstaged=$(( unstaged + 1 )) ;;
-      "u "*)             conflicts=$(( conflicts + 1 )); unstaged=$(( unstaged + 1 )) ;;
-      "? "*)             untracked=$(( untracked + 1 )) ;;
-    esac
-  done <<< "$gs"
+  # One awk pass: a bash loop costs ~25 µs a line, which adds up in a tree with
+  # thousands of untracked files.
+  read -r branch oid ahead behind staged unstaged untracked conflicts < <(awk '
+    /^# branch\.head / { b = substr($0, 15) }
+    /^# branch\.oid /  { o = $3 }
+    /^# branch\.ab /   { a = substr($3, 2); r = substr($4, 2) }
+    /^[12] / { if (substr($2, 1, 1) != ".") s++; if (substr($2, 2, 1) != ".") u++ }
+    /^u /    { c++; u++ }
+    /^\? /   { t++ }
+    END { printf "%s %s %d %d %d %d %d %d\n", (b == "" ? "detached" : b), (o == "" ? "-" : o), a, r, s, u, t, c }' <<< "$gs")
   [ "$branch" = "(detached)" ] && branch=${oid:0:7}
   dirty=""
   [ $(( staged + unstaged )) -gt 0 ] && dirty="*"
@@ -414,11 +423,11 @@ vis_width() { # display columns of a string: ANSI codes stripped, 🔥 counts as
   echo $(( ${#plain} * 2 - ${#nofire} ))  # each 🔥 adds one more column
 }
 max_w=0
-[[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && max_w=$(( COLUMNS - 4 ))  # room for the padding Claude Code draws around the status line
+[[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && max_w=$(( COLUMNS - 2 ))  # Claude Code indents the status line by two columns
 line2=""; cur_w=0
 add_seg() {
   [ -n "$1" ] || return
-  local w; w=$(vis_width "$1")
+  local w=0; [ "$max_w" -gt 0 ] && w=$(vis_width "$1")
   if [ -z "$line2" ]; then
     line2="$1"; cur_w=$w
   elif [ "$max_w" -gt 0 ] && [ $(( cur_w + 3 + w )) -gt "$max_w" ]; then

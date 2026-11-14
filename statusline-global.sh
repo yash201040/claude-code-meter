@@ -74,8 +74,9 @@ render() {
   if [ -f "$LIM" ]; then
     IFS=$'\037' read -r at fp fr sp sr <<< "$(jq -r '[.at,.five_pct,.five_reset,.seven_pct,.seven_reset] | map(tostring) | join("\u001f")' "$LIM" 2>/dev/null)"
   fi
-  [[ "$fr" =~ ^[0-9]+$ ]] && s5=$(( fr - 18000 ))
-  [[ "$sr" =~ ^[0-9]+$ ]] && s7=$(( sr - 604800 ))
+  # Same windows the status line asks the shared scan for (none once a reset passed).
+  [[ "$fr" =~ ^[0-9]+$ ]] && (( fr > now )) && s5=$(( fr - 18000 ))
+  [[ "$sr" =~ ^[0-9]+$ ]] && (( sr > now )) && s7=$(( sr - 604800 ))
   # Line 2 of the scanner's output is the API≈ line; it also keeps the shared scan fresh.
   api=$(python3 "$SCAN" "" "" "$s5" "$s7" 2>/dev/null | sed -n 2p)
 

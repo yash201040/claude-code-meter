@@ -27,7 +27,7 @@ You need `bash`, `jq`, `python3` (3.8 or newer) and `git`, on macOS or Linux.
 ## Notes
 
 - The status line stays on your machine. It reads the data Claude Code passes to it and your local session transcripts, and writes only to `~/.cache/cc-statusline/`.
-- The SwiftBar menu makes one request a minute to Anthropic's usage endpoint, the one `/usage` reads, because only it reports per-model weekly limits such as Fable. It uses the login token Claude Code keeps in the macOS Keychain, only for that request: the token is never stored, refreshed or sent anywhere else. If the request fails, the menu shows the all-models figures from the status line instead.
+- The SwiftBar menu makes one request a minute to Anthropic's usage endpoint, the one `/usage` reads, because only it reports per-model weekly limits such as Fable. Clicking Refresh in the menu asks again at once (at most every 10 seconds) and recounts the costs too. If the endpoint refuses (it is rate-limited), the menu waits 5 minutes and says so. It uses the login token Claude Code keeps in the macOS Keychain, only for that request: the token is never stored, refreshed or sent anywhere else. If the request fails, the menu shows the all-models figures from the status line instead.
 - Switching Claude accounts (`/login`) is handled: the limits shown are always the signed-in account's. Costs and burn rates count every Claude Code session on this machine, whichever account ran it.
 - Costs are API-equivalent estimates: what the usage would cost at API prices. On a subscription, use them for scale, not as a bill. They count only Claude Code sessions on this machine.
 - [INSTALL.md](INSTALL.md) explains each line, the options and how to uninstall.

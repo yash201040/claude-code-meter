@@ -9,13 +9,14 @@
 Limits come from Anthropic's usage endpoint, the same one /usage reads, because
 only it reports the per-model weekly limits (such as Fable). The request uses
 the access token Claude Code keeps in the macOS Keychain; the token is read for
-the request only, never stored or refreshed here. At most one request a minute;
+the request only, never stored or refreshed here. At most one request a minute
+on the timer, and at once when Refresh is clicked (no more than once every 10 s);
 only the limit figures are cached (~/.cache/cc-statusline/usage-api.json, 0600).
 If the request fails, the menu falls back to the all-models figures the status
-line writes (limits.json). Costs come from api-result.json. No transcript
-scanning and no background processes.
+line writes (limits.json). Costs come from api-result.json, which the status
+line keeps fresh; a click on Refresh rescans the transcripts for it first.
 """
-import base64, datetime, getpass, json, os, ssl, subprocess, time, urllib.request
+import base64, datetime, getpass, json, os, ssl, subprocess, sys, time, urllib.request
 
 CACHE = os.path.expanduser("~/.cache/cc-statusline")
 now = time.time()
@@ -107,6 +108,14 @@ def account_rows():
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_TTL = 55  # SwiftBar reruns the plugin every minute
+MANUAL_GAP = 10  # a click on Refresh asks again, but not more often than this
+# SwiftBar says why it ran the plugin: "Schedule" for the timer, other reasons
+# (the Refresh item, the refresh URL) mean someone asked for fresh figures.
+MANUAL = os.environ.get("SWIFTBAR_PLUGIN_REFRESH_REASON", "") in (
+    "MenuAction", "RefreshAllMenu", "RefreshAllURLScheme", "URLScheme")
+SCANNER = os.path.expanduser("~/.claude/statusline-scan.py")
+NONE_TS = 9999999999  # the scanner's "no such window" start
+backoff_until, backoff_err = 0, ""  # set while the usage endpoint has asked us to wait
 
 
 def iso_ts(v):
@@ -148,17 +157,32 @@ def tls():
     return ssl.create_default_context()
 
 
+def save_usage(path, data):
+    os.makedirs(CACHE, exist_ok=True)
+    tmp = path + ".%d" % os.getpid()
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
 def fetch_limits():
-    """[(label, short, pct, reset, length)] from the usage endpoint, cached for a minute.
-    The cache belongs to one account: after a switch it is ignored, so the new
-    account's limits are fetched at once and the old ones are never shown for it."""
+    """[(label, short, pct, reset, length)] from the usage endpoint, cached for a minute
+    (10 s after a click on Refresh). The cache belongs to one account: after a switch
+    it is ignored, so the new account's limits are fetched at once and the old ones
+    are never shown for it."""
+    global backoff_until, backoff_err
     path = os.path.join(CACHE, "usage-api.json")
     acct = account_id()
     cached = load("usage-api.json")
-    if cached and cached.get("acct") != acct:
+    if not isinstance(cached, dict) or cached.get("acct") != acct:
         cached = None
-    if cached and (now - num(cached.get("at") or 0) < USAGE_TTL or now < num(cached.get("retry_at") or 0)):
-        return cached.get("limits"), cached.get("at")
+    if cached:
+        retry_at = num(cached.get("retry_at")) or 0
+        if now < retry_at:  # the endpoint asked us to wait, even after a click
+            backoff_until, backoff_err = retry_at, cached.get("err") or ""
+            return cached.get("limits"), cached.get("at")
+        if now - (num(cached.get("at")) or 0) < (MANUAL_GAP if MANUAL else USAGE_TTL):
+            return cached.get("limits"), cached.get("at")
     tok = access_token()
     if not tok:
         return (cached or {}).get("limits"), (cached or {}).get("at")
@@ -176,13 +200,14 @@ def fetch_limits():
             wait = max(wait, int(e.headers.get("Retry-After") or 0))
         except Exception:
             pass
-        if cached:
-            cached["retry_at"] = now + wait
-            tmp = path + ".%d" % os.getpid()
-            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-                json.dump(cached, f)
-            os.replace(tmp, path)
-        return (cached or {}).get("limits"), (cached or {}).get("at")
+        # Saved even with nothing cached yet (a new account), so a refusal is not
+        # retried every minute.
+        backoff_until, backoff_err = now + wait, str(getattr(e, "code", None) or type(e).__name__)
+        keep = dict(cached or {"at": None, "acct": acct, "limits": None})
+        keep["retry_at"] = backoff_until
+        keep["err"] = backoff_err  # for the menu note
+        save_usage(path, keep)
+        return keep.get("limits"), keep.get("at")
     rows = []
     for l in body.get("limits") or []:
         pct, reset = num(l.get("percent")), iso_ts(l.get("resets_at"))
@@ -197,16 +222,38 @@ def fetch_limits():
         if model:
             base, short = "%s %s" % ("7-day" if weekly else base, model), model
         rows.append([base, short, pct, reset, 604800 if weekly else 18000 if five else None])
-    os.makedirs(CACHE, exist_ok=True)
-    tmp = path + ".%d" % os.getpid()
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-        json.dump({"at": now, "acct": acct, "limits": rows}, f)
-    os.replace(tmp, path)
+    save_usage(path, {"at": now, "acct": acct, "limits": rows})
     return rows, now
 
 
+def window_starts(limit_rows):
+    """Start of the live 5-hour and 7-day windows, as the status line passes them
+    to the scanner: reset minus the window length, in whole seconds."""
+    starts = {"5h": NONE_TS, "7d": NONE_TS}
+    for _, short, _, reset, length in limit_rows:
+        if short in starts and reset and length and reset > now:
+            starts[short] = int(round(reset)) - length
+    return starts
+
+
+def rescan_costs(limit_rows):
+    """After a click on Refresh: bring api-result.json up to date now instead of
+    waiting for a status line to redraw. Same window starts the status line uses
+    (reset minus the window length, whole seconds), so its cache stays valid."""
+    if not os.path.exists(SCANNER):
+        return
+    starts = window_starts(limit_rows)
+    try:  # the scanner takes its own lock and exits at once if a scan is running
+        subprocess.run(["/usr/bin/nice", "-n", "10", sys.executable, "-I", SCANNER, "--refresh",
+                        str(starts["5h"]), str(starts["7d"])],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    except Exception:
+        pass
+
+
 lim = load("limits.json") or {}
-res = load("api-result.json")
+if not isinstance(lim, dict) or (lim.get("acct") and lim.get("acct") != account_id()):
+    lim = {}  # unreadable, or another account's figures from before a /login
 api_rows, api_at = None, None
 try:
     api_rows, api_at = fetch_limits()
@@ -218,6 +265,11 @@ else:  # offline or signed out: the all-models figures the status line saw
     limit_rows = [[name, label, num(lim.get(pk)), num(lim.get(rk)), length]
                   for label, name, pk, rk, length in (("5h", "5-hour", "five_pct", "five_reset", 18000),
                                                       ("7d", "7-day standard", "seven_pct", "seven_reset", 604800))]
+if MANUAL:
+    rescan_costs(limit_rows)
+res = load("api-result.json")
+if not isinstance(res, dict):
+    res = None
 
 # ---------------------------------------------------------------- limits
 title, rows, level = [], [], 0  # level: 0 normal, 1 warn, 2 alert
@@ -282,44 +334,56 @@ else:
     item("No limits reported yet: open a Claude Code session")
 
 # ---------------------------------------------------------------- spend
-if res and res.get("w"):
-    w = res["w"]
+def spend_lines():
+    """Menu lines for the cost section, all built before any is printed, so a
+    damaged cache leaves the section out instead of breaking the menu."""
+    if not (res and res.get("w")):
+        return []
+    w, out = res["w"], []
     sm = datetime.datetime.fromtimestamp(res["sm"])
-    five_live = num(lim.get("five_reset")) is not None and num(lim.get("five_reset")) > now
+    # A window's cost is shown only while it is the window the limits describe:
+    # just after a reset the cache still holds the old window until the next scan.
+    starts = window_starts(limit_rows)
     spend = []
-    for k, label in (("5h", "This 5-hour window"), ("7d", "This 7-day window"),
-                     ("mo", "Since " + sm.strftime("%b ") + str(sm.day))):
-        if k == "5h" and not five_live:
+    for k, label, sk in (("5h", "This 5-hour window", "s5"), ("7d", "This 7-day window", "s7"),
+                         ("mo", "Since " + sm.strftime("%b ") + str(sm.day), None)):
+        if sk and (starts[k] == NONE_TS or res.get(sk) != starts[k]):
             continue
         if w[k]["in"] > 0:
             spend.append((label, usd(w[k]["cost"])))
-    try:
-        price = float(res.get("price") or 0)
-    except ValueError:
-        price = 0
+    price = num(res.get("price")) or 0
     mo = w["mo"]
-    print("---")
-    item("API-equivalent spend (what this usage would cost on the API)", HEAD)
+    out.append(("---", None))
+    out.append(("API-equivalent spend (what this usage would cost on the API)", HEAD))
     for label, value in spend:
-        item("%-20s %8s" % (label, value), MONO + " sfimage=dollarsign.circle")
+        out.append(("%-20s %8s" % (label, value), MONO + " sfimage=dollarsign.circle"))
     if price > 0:
         mult = mo["cost"] / price
-        item("%-20s %8s" % ("Plan value used", ("%.0f×" if mult >= 10 else "%.1f×") % mult)
-             + "  of %s $%s" % (res.get("plan", "plan"), res["price"]), MONO + " sfimage=creditcard")
-
-    # details submenu
-    item("Details", "sfimage=list.bullet")
+        out.append(("%-20s %8s" % ("Plan value used", ("%.0f×" if mult >= 10 else "%.1f×") % mult)
+                    + "  of %s $%s" % (res.get("plan", "plan"), res["price"]), MONO + " sfimage=creditcard"))
+    out.append(("Details", "sfimage=list.bullet"))
     if mo["in"] > 0:
-        item("--Prompt cache hits   %d%%" % round(mo["cr"] * 100 / mo["in"]), MONO)
+        out.append(("--Prompt cache hits   %d%%" % round(mo["cr"] * 100 / mo["in"]), MONO))
     tot = mo["cost"]
     mix = []
     for t in ("fable", "opus", "sonnet", "haiku", "other"):
-        share = round(res.get("tiers", {}).get(t, 0) * 100 / tot) if tot > 0 else 0
+        share = round((res.get("tiers") or {}).get(t, 0) * 100 / tot) if tot > 0 else 0
         if share > 0:
             mix.append("%s %d%%" % (t, share))
     if mix:
-        item("--Models (by cost)    " + " · ".join(mix), MONO)
-    item("--Tokens this cycle   %s in · %s out" % (tok(mo["in"]), tok(mo["out"])), MONO)
+        out.append(("--Models (by cost)    " + " · ".join(mix), MONO))
+    out.append(("--Tokens this cycle   %s in · %s out" % (tok(mo["in"]), tok(mo["out"])), MONO))
+    return out
+
+
+try:
+    for text, params in spend_lines():
+        if params is None:
+            print(text)
+        else:
+            item(text, params)
+except Exception:
+    pass
 
 # ---------------------------------------------------------------- footer
 print("---")
@@ -329,7 +393,9 @@ if api_rows and api_at:
 elif num(lim.get("at")) is not None:
     ages.append("limits %s ago (offline: all models only)" % dur(now - num(lim["at"])))
 if res and num(res.get("at")) is not None:
-    ages.append("costs %s ago" % dur(now - res["at"]))
+    ages.append("costs %s ago" % dur(now - num(res["at"])))
 item("Updated " + (", ".join(ages) or "never"), HEAD)
+if backoff_until > now:
+    item("Usage endpoint refused (%s): next check in %s" % (backoff_err or "error", dur(backoff_until - now)), HEAD)
 item("Counts Claude Code sessions on this Mac only", HEAD)
 item("Refresh", "refresh=true sfimage=arrow.clockwise")

@@ -32,6 +32,11 @@ FILES_CACHE = os.path.join(CACHE_DIR, "files.json")
 RESULT = os.path.join(CACHE_DIR, "api-result.json")
 LOCK = os.path.join(CACHE_DIR, "scan.lock")
 SCAN_TTL = 60
+# A refresh holding the lock longer than this is taken to have died.
+LOCK_STALE = 300
+# The burn rate is not shown from a result older than this: after a long idle it
+# would describe hours ago, until the background refresh lands.
+ACC_MAX_AGE = 600
 # Bumped when the per-entry layout in files.json changes: the cache is rebuilt once.
 CACHE_VERSION = 2
 # A reply that came this long after its request is counted as this long: past it,
@@ -298,11 +303,52 @@ def cost(en):
     return (i * pi + (cw - e1) * pi * 1.25 + e1 * pi * 2 + r * pi * 0.1 + o * po) / 1e6
 
 
+def take_lock():
+    """True when this process now holds the scan lock (created atomically, so two
+    renders at the same moment cannot both start a refresh)."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(LOCK, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                if time.time() - os.stat(LOCK).st_mtime < LOCK_STALE:
+                    return False
+                os.unlink(LOCK)  # left by a refresh that died
+            except OSError:
+                pass
+            continue
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    return False
+
+
+def drop_lock():
+    try:
+        with open(LOCK) as f:
+            if f.read().strip() != str(os.getpid()):
+                return  # not ours: a stale-lock takeover happened meanwhile
+        os.unlink(LOCK)
+    except OSError:
+        pass
+
+
+def lock_held():
+    try:
+        return time.time() - os.stat(LOCK).st_mtime < LOCK_STALE
+    except OSError:
+        return False
+
+
 def refresh(s5, s7):
     sm = billing_start()
-    earliest = min(s5, s7, sm)
+    # Which files stay cached is fixed, not set by the caller's windows: callers
+    # with different windows would otherwise evict and re-read each other's files.
+    earliest = min(sm, int(time.time()) - 604800 - 18000)
     cache = load(FILES_CACHE, {})
-    if cache.get("_v") != CACHE_VERSION:
+    changed = cache.get("_v") != CACHE_VERSION
+    if changed:
         cache = {}  # older layout without request times: rescan once
     seen = set()
     for path in glob.glob(os.path.join(PROJ, "**", "*.jsonl"), recursive=True):
@@ -318,13 +364,17 @@ def refresh(s5, s7):
             rec = {"off": 0, "e": []}
         if st.st_size > rec["off"]:
             rec["e"].extend(extract_usage(path, rec))
+            changed = True
         cache[path] = rec
     for path in list(cache):
-        if path not in seen:
+        if path not in seen and path != "_v":
             del cache[path]
-    cache["_v"] = CACHE_VERSION
-    save(FILES_CACHE, cache)
-    del cache["_v"]
+            changed = True
+    cache.pop("_v", None)
+    if changed:  # several MB: not rewritten when no transcript grew
+        cache["_v"] = CACHE_VERSION
+        save(FILES_CACHE, cache)
+        del cache["_v"]
 
     # "1h" is a rolling last hour across every session. Its spend divided by the
     # model time in it is the account's burn rate, so idle time does not dilute
@@ -361,20 +411,23 @@ def refresh(s5, s7):
 
 def api_result(s5, s7):
     res = load(RESULT, None)
+    if not (isinstance(res, dict) and isinstance(res.get("w"), dict) and "at" in res):
+        res = None  # missing or damaged: rebuilt below
     fresh = (res is not None and time.time() - res["at"] < SCAN_TTL
-             and res["s5"] == s5 and res["s7"] == s7 and res["sm"] == billing_start())
+             and res.get("s5") == s5 and res.get("s7") == s7 and res.get("sm") == billing_start())
     if fresh:
         return res
-    try:
-        locked = time.time() - os.stat(LOCK).st_mtime < 120
-    except OSError:
-        locked = False
-    if res is None and not locked:
-        refresh(s5, s7)  # first ever scan: inline, like the old jq pass
+    if res is None:
+        # First ever scan: inline, by one session only; the others show nothing yet.
+        if not take_lock():
+            return None
+        try:
+            refresh(s5, s7)
+        finally:
+            drop_lock()
         return load(RESULT, None)
-    if not locked:
+    if not lock_held():  # the child takes the lock itself; a loser exits at once
         os.makedirs(CACHE_DIR, exist_ok=True)
-        open(LOCK, "w").close()
         subprocess.Popen(
             ["nice", "-n", "10", sys.executable, os.path.abspath(__file__), "--refresh", str(s5), str(s7)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -424,13 +477,12 @@ def api_lines(sid, res):
 
 def main():
     if sys.argv[1] == "--refresh":
+        if not take_lock():
+            return  # another refresh is running
         try:
             refresh(int(sys.argv[2]), int(sys.argv[3]))
         finally:
-            try:
-                os.unlink(LOCK)
-            except OSError:
-                pass
+            drop_lock()
         return
     sid, transcript = sys.argv[1], sys.argv[2]
     s5 = int(sys.argv[3]) if sys.argv[3].isdigit() else NONE_TS
@@ -449,7 +501,7 @@ def main():
     try:
         h = res["w"]["1h"]
         # Under a minute of model time the rate is mostly noise; show nothing yet.
-        if h["cost"] > 0 and h.get("active", 0) >= 60:
+        if h["cost"] > 0 and h.get("active", 0) >= 60 and time.time() - res["at"] < ACC_MAX_AGE:
             acc = "%.2f" % (h["cost"] * 3600 / h["active"])
     except Exception:
         pass  # a result saved before the 1h window existed: shown after the next refresh

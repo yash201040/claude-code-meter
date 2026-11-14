@@ -54,6 +54,6 @@ Costs are API-equivalent estimates, meaning what the usage would cost at API pri
 ## Files and data
 
 - The status line is local. It reads the JSON Claude Code passes to it and the session transcripts in `~/.claude/projects/`, and writes only to the cache in `~/.cache/cc-statusline/`.
-- The SwiftBar menu requests `https://api.anthropic.com/api/oauth/usage` at most once a minute, with the access token Claude Code keeps in the Keychain item `Claude Code-credentials`. The token is read for that request only and never stored or refreshed; only the limit figures are cached (`usage-api.json`, owner-only, tied to the signed-in account). Tell the user this before installing the menu.
-- `statusline-scan.py` reads the transcripts incrementally, so each render only parses what was written since the last one. A full scan across all sessions runs in the background at most once a minute.
+- The SwiftBar menu requests `https://api.anthropic.com/api/oauth/usage` at most once a minute (once every 10 seconds when the user clicks Refresh; 5 minutes after a refusal), with the access token Claude Code keeps in the Keychain item `Claude Code-credentials`. The token is read for that request only and never stored or refreshed; only the limit figures are cached (`usage-api.json`, owner-only, tied to the signed-in account). Tell the user this before installing the menu.
+- `statusline-scan.py` reads the transcripts incrementally, so each render only parses what was written since the last one. A full scan across all sessions runs in the background at most once a minute, one at a time (a lock in the cache folder), and every session asks it for the same account-wide windows.
 - To uninstall, remove the `statusLine` key, the three files and `~/.cache/cc-statusline/`.
