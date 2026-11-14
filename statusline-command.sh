@@ -6,6 +6,8 @@
 # Line 3: lines +a/-r │ in · out · main/agents/wf share │ age · ran (model time) │ cost 🔥$/hr of model time
 #         · acc 🔥$/hr (every session's spend in the last hour, per hour of model time)
 #         (burn colour, both rates: plain under $20/hr, green to $60, yellow to $140, orange to $300, red above)
+#         In a pane too narrow for line 3, its segments wrap onto a fourth line
+#         instead of being cut off.
 # The 5h/7d limits live in the SwiftBar menu (cc-usage), not here.
 #
 # All values come from the JSON Claude Code pipes in on stdin (see
@@ -401,8 +403,30 @@ line_model="[${C_CYAN}${model}${C_RESET}${win_label:+ ${C_GREY}·${C_RESET} ${C_
 [ -n "$session_label" ] && line_model="${line_model}  ${C_GREY}${session_label}${C_RESET}"
 line_model="${line_model}${perm_part}"
 
-line2=""
-add_seg() { [ -n "$1" ] || return; [ -n "$line2" ] && line2="${line2} ${SEP} "; line2="${line2}$1"; }
+# Claude Code cuts a status line that is wider than the pane, which would hide the
+# burn rates at the end of this line in narrow panes. So segments fill the line in
+# order and one that doesn't fit starts a new line. COLUMNS is the pane width
+# Claude Code passes; without it everything stays on one line.
+vis_width() { # display columns of a string: ANSI codes stripped, 🔥 counts as two
+  local LC_ALL=en_US.UTF-8 plain
+  plain=$(printf '%s' "$1" | sed $'s/\x1b\\[[0-9;]*m//g')
+  local nofire="${plain//🔥/}"
+  echo $(( ${#plain} * 2 - ${#nofire} ))  # each 🔥 adds one more column
+}
+max_w=0
+[[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && max_w=$(( COLUMNS - 4 ))  # room for the padding Claude Code draws around the status line
+line2=""; cur_w=0
+add_seg() {
+  [ -n "$1" ] || return
+  local w; w=$(vis_width "$1")
+  if [ -z "$line2" ]; then
+    line2="$1"; cur_w=$w
+  elif [ "$max_w" -gt 0 ] && [ $(( cur_w + 3 + w )) -gt "$max_w" ]; then
+    line2="${line2}"$'\n'"$1"; cur_w=$w
+  else
+    line2="${line2} ${SEP} $1"; cur_w=$(( cur_w + 3 + w ))
+  fi
+}
 add_seg "$vel_seg"
 # The origin split is a share of the same token totals, so it joins that segment.
 [ -n "$mix_line" ] && tok_seg="${tok_seg}${tok_seg:+ ${C_GREY}·${C_RESET} }${mix_line}"

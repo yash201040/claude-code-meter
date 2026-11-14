@@ -17,6 +17,7 @@ lines +540/-30 │ in 3.2M · out 85K · main 92% · agents 8% │ age 5h10m · 
   - Tokens in and out, and each origin's share of them (main chat, subagents, workflows).
   - Session `age` (time since it started, idle time included) and how long the model `ran`.
   - The API-equivalent cost and this session's burn rate per hour of model time, then `acc`: the account's burn rate. That is every Claude Code session's API-equivalent spend on this machine in the last hour, divided by the time in that hour when any of them had the model working. Idle time is left out of both rates, and sessions running at the same time add up. It comes from the shared background scan and can lag by a minute or two.
+  - In a pane too narrow for the whole line, the segments that don't fit move to a fourth line instead of being cut off, so the burn rates at the end stay visible. The width comes from `COLUMNS`, which Claude Code passes to the status line.
   - Both rates use the same colours: plain text under $20/hr, then green up to $60, yellow up to $140, orange up to $300 and red above that. Orange uses the 256-colour palette, which modern terminals support. To change the bands, edit `burn_col` in `statusline-command.sh`.
 
 Costs are API-equivalent estimates, meaning what the usage would cost at API prices. On a subscription they're for scale, not a bill. The 5-hour and 7-day limits are shown in the SwiftBar menu rather than the status line, to keep the status line to three rows. They need a claude.ai subscription login.
